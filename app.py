@@ -4,7 +4,7 @@ import json
 import streamlit as st
 from rag import (
     ingest_pdf_to_pinecone, retrieve, generate_answer, simple_retrieval_score,
-    evaluate_retrieval_accuracy, run_evaluation_suite
+    evaluate_retrieval_accuracy, run_evaluation_suite, reindex_pdfs, get_index_stats
 )
 from config import SHOW_RETRIEVED_CHUNKS
 
@@ -62,6 +62,32 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("🧪 Evaluation")
+    
+    # Index management
+    st.markdown("---")
+    st.header("🗄️ Index Management")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📊 Index Stats"):
+            try:
+                stats = get_index_stats()
+                if "error" not in stats:
+                    st.success(f"Total vectors: {stats['total_vector_count']}")
+                    st.info(f"Dimension: {stats['dimension']}")
+                else:
+                    st.error(f"Failed to get stats: {stats['error']}")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    
+    with col2:
+        if st.button("🔄 Reindex All PDFs", type="secondary"):
+            try:
+                with st.spinner("Reindexing all PDFs..."):
+                    total_chunks = reindex_pdfs()
+                    st.success(f"Reindexed {total_chunks} chunks!")
+            except Exception as e:
+                st.error(f"Reindexing failed: {str(e)}")
     
     # Load evaluation data
     try:
