@@ -12,7 +12,7 @@ langchain-text-splitters
 sentence-transformers
 
 # Vector DB
-pinecone-client>=5.0.0
+pinecone
 
 # LLM
 groq
