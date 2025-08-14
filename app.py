@@ -29,13 +29,36 @@ with st.sidebar:
     up = st.file_uploader("PDFs", type=["pdf"], accept_multiple_files=True)
     if up:
         total_chunks = 0
-        with st.spinner("Indexing..."):
-            for f in up:
-                path = os.path.join("data", f.name)
-                with open(path, "wb") as out:
-                    out.write(f.getbuffer())
-                total_chunks += ingest_pdf_to_pinecone(path)
-        st.success(f"Ingested {len(up)} file(s), {total_chunks} chunks.")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            with st.spinner("Indexing..."):
+                for i, f in enumerate(up):
+                    status_text.text(f"Processing {f.name}...")
+                    progress_bar.progress((i) / len(up))
+                    
+                    path = os.path.join("data", f.name)
+                    with open(path, "wb") as out:
+                        out.write(f.getbuffer())
+                    
+                    # Index the PDF with progress updates
+                    try:
+                        chunks = ingest_pdf_to_pinecone(path)
+                        total_chunks += chunks
+                        status_text.text(f"Indexed {f.name}: {chunks} chunks")
+                        progress_bar.progress((i + 1) / len(up))
+                    except Exception as e:
+                        st.error(f"Failed to index {f.name}: {str(e)}")
+                        continue
+                
+                progress_bar.progress(1.0)
+                status_text.text("Indexing complete!")
+                st.success(f"Ingested {len(up)} file(s), {total_chunks} chunks.")
+                
+        except Exception as e:
+            st.error(f"Indexing failed: {str(e)}")
+            st.info("Please check your API keys and internet connection.")
     
     st.markdown("---")
     st.header("🧪 Evaluation")
@@ -48,10 +71,13 @@ with st.sidebar:
         
         if st.button("Run Evaluation Suite"):
             with st.spinner("Running evaluation..."):
-                results = run_evaluation_suite(evaluation_data)
-                st.session_state.evaluation_results = results
-                st.success("Evaluation complete!")
-                
+                try:
+                    results = run_evaluation_suite(evaluation_data)
+                    st.session_state.evaluation_results = results
+                    st.success("Evaluation complete!")
+                except Exception as e:
+                    st.error(f"Evaluation failed: {str(e)}")
+                    
     except FileNotFoundError:
         st.warning("evaluation_data.json not found")
         evaluation_data = []
@@ -65,33 +91,42 @@ with tab1:
     go = st.button("Search & Generate")
 
     if go and query.strip():
-        with st.spinner("Retrieving…"):
-            matches, rt_ms = retrieve(query, top_k=5)
-        if not matches:
-            st.warning("No relevant passages found. Try another query or upload more literature.")
-        else:
-            avg_score = simple_retrieval_score(matches)
+        try:
+            with st.spinner("Retrieving…"):
+                matches, rt_ms = retrieve(query, top_k=5)
+            if not matches:
+                st.warning("No relevant passages found. Try another query or upload more literature.")
+            else:
+                avg_score = simple_retrieval_score(matches)
 
-            cols = st.columns([2, 1])
-            with cols[0]:
-                with st.spinner("Generating answer…"):
-                    answer, gen_ms = generate_answer(query, matches)
-                st.markdown("### 💡 Evidence-based answer")
-                st.write(answer)
+                cols = st.columns([2, 1])
+                with cols[0]:
+                    with st.spinner("Generating answer…"):
+                        try:
+                            answer, gen_ms = generate_answer(query, matches)
+                            st.markdown("### 💡 Evidence-based answer")
+                            st.write(answer)
+                        except Exception as e:
+                            st.error(f"Failed to generate answer: {str(e)}")
+                            answer = "Error generating answer. Please check your Groq API key."
+                            gen_ms = 0
 
-            with cols[1]:
-                st.markdown("### 📊 Diagnostics")
-                st.write(f"Retrieval latency: **{rt_ms:.0f} ms**")
-                st.write(f"Generation latency: **{gen_ms:.0f} ms**")
-                st.write(f"Avg retrieval score: **{avg_score:.3f}** (cosine)")
+                with cols[1]:
+                    st.markdown("### 📊 Diagnostics")
+                    st.write(f"Retrieval latency: **{rt_ms:.0f} ms**")
+                    st.write(f"Generation latency: **{gen_ms:.0f} ms**")
+                    st.write(f"Avg retrieval score: **{avg_score:.3f}** (cosine)")
 
-            st.markdown("---")
-            st.markdown("### 📚 Sources")
-            for i, m in enumerate(matches, 1):
-                st.markdown(
-                    f"**{i}. {m['source']}** (page {m.get('page')}) — score {m['score']:.3f}\n\n"
-                    + (f"> {m['text'][:700]}..." if SHOW_RETRIEVED_CHUNKS else "")
-                )
+                st.markdown("---")
+                st.markdown("### 📚 Sources")
+                for i, m in enumerate(matches, 1):
+                    st.markdown(
+                        f"**{i}. {m['source']}** (page {m.get('page')}) — score {m['score']:.3f}\n\n"
+                        + (f"> {m['text'][:700]}..." if SHOW_RETRIEVED_CHUNKS else "")
+                    )
+        except Exception as e:
+            st.error(f"Query failed: {str(e)}")
+            st.info("Please check your Pinecone connection and API keys.")
 
 with tab2:
     st.subheader("Evaluation Results")
@@ -113,14 +148,17 @@ with tab2:
         for i, item in enumerate(results['detailed_results']):
             with st.expander(f"Q{i+1}: {item['question']}"):
                 result = item['result']
-                st.write(f"**Accuracy:** {result['accuracy']:.1%}")
-                st.write(f"**Latency:** {result['latency_ms']:.0f} ms")
-                st.write(f"**Keywords Found:** {result['keywords_found']}/{result['total_keywords']}")
-                
-                if result['found_keywords']:
-                    st.write(f"**Found:** {', '.join(result['found_keywords'])}")
-                if result['missing_keywords']:
-                    st.write(f"**Missing:** {', '.join(result['missing_keywords'])}")
+                if 'error' in result:
+                    st.error(f"Error: {result['error']}")
+                else:
+                    st.write(f"**Accuracy:** {result['accuracy']:.1%}")
+                    st.write(f"**Latency:** {result['latency_ms']:.0f} ms")
+                    st.write(f"**Keywords Found:** {result['keywords_found']}/{result['total_keywords']}")
+                    
+                    if result['found_keywords']:
+                        st.write(f"**Found:** {', '.join(result['found_keywords'])}")
+                    if result['missing_keywords']:
+                        st.write(f"**Missing:** {', '.join(result['missing_keywords'])}")
     else:
         st.info("Run the evaluation suite from the sidebar to see results here.")
 

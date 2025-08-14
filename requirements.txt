@@ -1,14 +1,11 @@
-# Core
+# Core - only what you need
 streamlit
-pandas
-tqdm
+python-dotenv
 
-# PDF + chunking
+# PDF processing
 pypdf
-langchain-community
-langchain-text-splitters
 
-# Embeddings
+# Embeddings (much smaller alternative)
 sentence-transformers
 
 # Vector DB
@@ -17,5 +14,6 @@ pinecone
 # LLM
 groq
 
-# Misc
-python-dotenv
+# Text processing
+langchain-text-splitters
+langchain-community
