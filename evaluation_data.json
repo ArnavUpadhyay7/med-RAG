@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What is the first-line treatment for stage 2 hypertension in patients with diabetes?",
+    "expected_keywords": ["ACE inhibitor", "angiotensin", "diabetes", "hypertension", "first-line", "treatment"]
+  },
+  {
+    "question": "What are the contraindications for metformin use?",
+    "expected_keywords": ["metformin", "contraindications", "renal failure", "lactic acidosis", "heart failure"]
+  },
+  {
+    "question": "What is the recommended LDL cholesterol target for patients with cardiovascular disease?",
+    "expected_keywords": ["LDL", "cholesterol", "target", "cardiovascular", "disease", "recommendation"]
+  },
+  {
+    "question": "What are the side effects of statins?",
+    "expected_keywords": ["statins", "side effects", "myopathy", "liver", "muscle pain", "rhabdomyolysis"]
+  },
+  {
+    "question": "What is the diagnostic criteria for type 2 diabetes?",
+    "expected_keywords": ["diabetes", "diagnostic", "criteria", "glucose", "HbA1c", "fasting"]
+  }
+]

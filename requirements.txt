@@ -1,0 +1,21 @@
+# Core
+streamlit
+pandas
+tqdm
+
+# PDF + chunking
+pypdf
+langchain-community
+langchain-text-splitters
+
+# Embeddings
+sentence-transformers
+
+# Vector DB
+pinecone-client>=5.0.0
+
+# LLM
+groq
+
+# Misc
+python-dotenv
