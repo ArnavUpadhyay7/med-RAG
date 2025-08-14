@@ -23,16 +23,26 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
 
 # ---------- Pinecone setup ----------
 def _ensure_pinecone_index():
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    existing = {idx["name"] for idx in pc.list_indexes()}
-    if PINECONE_INDEX not in existing:
-        pc.create_index(
-            name=PINECONE_INDEX,
-            dimension=EMBED_DIM,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-    return pc.Index(PINECONE_INDEX)
+    try:
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        existing = {idx["name"] for idx in pc.list_indexes()}
+        
+        if PINECONE_INDEX not in existing:
+            print(f"Creating new index: {PINECONE_INDEX} with {EMBED_DIM} dimensions")
+            pc.create_index(
+                name=PINECONE_INDEX,
+                dimension=EMBED_DIM,
+                metric="cosine",
+                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            )
+            # Wait a moment for index to be ready
+            time.sleep(5)
+        else:
+            print(f"Using existing index: {PINECONE_INDEX}")
+            
+        return pc.Index(PINECONE_INDEX)
+    except Exception as e:
+        raise Exception(f"Failed to connect to Pinecone: {str(e)}")
 
 _index = None
 def get_index():
@@ -43,66 +53,92 @@ def get_index():
 
 # ---------- Ingestion ----------
 def chunk_pdf(pdf_path: str) -> List[Dict]:
-    loader = PyPDFLoader(pdf_path)
-    docs = loader.load()
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", ". ", " ", ""]
-    )
-    chunks = splitter.split_documents(docs)
-    # Convert to simple dicts
-    items = []
-    for i, ch in enumerate(chunks):
-        meta = ch.metadata or {}
-        items.append({
-            "id": f"{meta.get('source', 'pdf')}-{meta.get('page', 0)}-{i}-{uuid.uuid4().hex[:8]}",
-            "text": ch.page_content.strip(),
-            "metadata": {
-                "source": meta.get("source", pdf_path.split("/")[-1]),
-                "page": meta.get("page", 0),
-            }
-        })
-    return items
+    try:
+        loader = PyPDFLoader(pdf_path)
+        docs = loader.load()
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
+        chunks = splitter.split_documents(docs)
+        # Convert to simple dicts
+        items = []
+        for i, ch in enumerate(chunks):
+            meta = ch.metadata or {}
+            items.append({
+                "id": f"{meta.get('source', 'pdf')}-{meta.get('page', 0)}-{i}-{uuid.uuid4().hex[:8]}",
+                "text": ch.page_content.strip(),
+                "metadata": {
+                    "source": meta.get("source", pdf_path.split("/")[-1]),
+                    "page": meta.get("page", 0),
+                }
+            })
+        return items
+    except Exception as e:
+        raise Exception(f"Failed to chunk PDF {pdf_path}: {str(e)}")
 
 def ingest_pdf_to_pinecone(pdf_path: str) -> int:
-    items = chunk_pdf(pdf_path)
-    texts = [it["text"] for it in items]
-    vecs = embed_texts(texts)
-
-    index = get_index()
-
-    # Upsert in batches
-    batch = []
-    for it, vec in zip(items, vecs):
-        md = {"text": it["text"], **it["metadata"]}
-        batch.append({"id": it["id"], "values": vec, "metadata": md})
-        if len(batch) == 100:
-            index.upsert(vectors=batch)
+    try:
+        # Step 1: Chunk the PDF
+        items = chunk_pdf(pdf_path)
+        if not items:
+            raise Exception("No chunks created from PDF")
+        
+        # Step 2: Create embeddings
+        texts = [it["text"] for it in items]
+        vecs = embed_texts(texts)
+        
+        # Step 3: Get Pinecone index
+        index = get_index()
+        
+        # Step 4: Upsert in smaller batches with timeout protection
+        batch_size = 50  # Reduced from 100
+        total_upserted = 0
+        
+        for i in range(0, len(items), batch_size):
+            batch_items = items[i:i + batch_size]
+            batch_vecs = vecs[i:i + batch_size]
+            
             batch = []
-    if batch:
-        index.upsert(vectors=batch)
-
-    return len(items)
+            for it, vec in zip(batch_items, batch_vecs):
+                md = {"text": it["text"], **it["metadata"]}
+                batch.append({"id": it["id"], "values": vec, "metadata": md})
+            
+            # Upsert with timeout
+            try:
+                index.upsert(vectors=batch)
+                total_upserted += len(batch)
+                time.sleep(0.1)  # Small delay between batches
+            except Exception as e:
+                raise Exception(f"Failed to upsert batch {i//batch_size + 1}: {str(e)}")
+        
+        return total_upserted
+        
+    except Exception as e:
+        raise Exception(f"Indexing failed: {str(e)}")
 
 # ---------- Retrieval ----------
 def retrieve(query: str, top_k: int = TOP_K) -> Tuple[List[Dict], float]:
-    t0 = time.perf_counter()
-    qvec = embed_texts([query])[0]
-    index = get_index()
-    res = index.query(vector=qvec, top_k=top_k, include_metadata=True)
-    elapsed = (time.perf_counter() - t0) * 1000.0  # ms
+    try:
+        t0 = time.perf_counter()
+        qvec = embed_texts([query])[0]
+        index = get_index()
+        res = index.query(vector=qvec, top_k=top_k, include_metadata=True)
+        elapsed = (time.perf_counter() - t0) * 1000.0  # ms
 
-    matches = []
-    for m in res.matches or []:
-        md = m.metadata or {}
-        matches.append({
-            "id": m.id,
-            "score": float(m.score),
-            "text": md.get("text", ""),
-            "source": md.get("source", "unknown"),
-            "page": md.get("page", None),
-        })
-    return matches, elapsed
+        matches = []
+        for m in res.matches or []:
+            md = m.metadata or {}
+            matches.append({
+                "id": m.id,
+                "score": float(m.score),
+                "text": md.get("text", ""),
+                "source": md.get("source", "unknown"),
+                "page": md.get("page", None),
+            })
+        return matches, elapsed
+    except Exception as e:
+        raise Exception(f"Retrieval failed: {str(e)}")
 
 # ---------- Generation (Groq) ----------
 def _build_prompt(query: str, contexts: List[Dict]) -> str:
@@ -123,18 +159,21 @@ def _build_prompt(query: str, contexts: List[Dict]) -> str:
     )
 
 def generate_answer(query: str, contexts: List[Dict]) -> Tuple[str, float]:
-    t0 = time.perf_counter()
-    client = Groq(api_key=GROQ_API_KEY)
-    prompt = _build_prompt(query, contexts)
-    resp = client.chat.completions.create(
-        model="llama3-8b-8192",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        max_tokens=600,
-    )
-    answer = resp.choices[0].message.content
-    elapsed = (time.perf_counter() - t0) * 1000.0  # ms
-    return answer, elapsed
+    try:
+        t0 = time.perf_counter()
+        client = Groq(api_key=GROQ_API_KEY)
+        prompt = _build_prompt(query, contexts)
+        resp = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=600,
+        )
+        answer = resp.choices[0].message.content
+        elapsed = (time.perf_counter() - t0) * 1000.0  # ms
+        return answer, elapsed
+    except Exception as e:
+        raise Exception(f"Generation failed: {str(e)}")
 
 # ---------- Simple evaluation helper ----------
 def simple_retrieval_score(matches: List[Dict]) -> float:
@@ -156,36 +195,46 @@ def evaluate_retrieval_accuracy(query: str, expected_keywords: List[str], top_k:
     Returns:
         Dict with accuracy metrics
     """
-    matches, latency = retrieve(query, top_k=top_k)
-    
-    if not matches:
+    try:
+        matches, latency = retrieve(query, top_k=top_k)
+        
+        if not matches:
+            return {
+                "accuracy": 0.0,
+                "latency_ms": latency,
+                "chunks_retrieved": 0,
+                "keywords_found": 0,
+                "total_keywords": len(expected_keywords)
+            }
+        
+        # Check how many expected keywords appear in retrieved chunks
+        found_keywords = set()
+        for match in matches:
+            chunk_text = match['text'].lower()
+            for keyword in expected_keywords:
+                if keyword.lower() in chunk_text:
+                    found_keywords.add(keyword.lower())
+        
+        accuracy = len(found_keywords) / len(expected_keywords) if expected_keywords else 0.0
+        
+        return {
+            "accuracy": accuracy,
+            "latency_ms": latency,
+            "chunks_retrieved": len(matches),
+            "keywords_found": len(found_keywords),
+            "total_keywords": len(expected_keywords),
+            "found_keywords": list(found_keywords),
+            "missing_keywords": [kw for kw in expected_keywords if kw.lower() not in found_keywords]
+        }
+    except Exception as e:
         return {
             "accuracy": 0.0,
-            "latency_ms": latency,
+            "latency_ms": 0.0,
             "chunks_retrieved": 0,
             "keywords_found": 0,
-            "total_keywords": len(expected_keywords)
+            "total_keywords": len(expected_keywords),
+            "error": str(e)
         }
-    
-    # Check how many expected keywords appear in retrieved chunks
-    found_keywords = set()
-    for match in matches:
-        chunk_text = match['text'].lower()
-        for keyword in expected_keywords:
-            if keyword.lower() in chunk_text:
-                found_keywords.add(keyword.lower())
-    
-    accuracy = len(found_keywords) / len(expected_keywords) if expected_keywords else 0.0
-    
-    return {
-        "accuracy": accuracy,
-        "latency_ms": latency,
-        "chunks_retrieved": len(matches),
-        "keywords_found": len(found_keywords),
-        "total_keywords": len(expected_keywords),
-        "found_keywords": list(found_keywords),
-        "missing_keywords": [kw for kw in expected_keywords if kw.lower() not in found_keywords]
-    }
 
 def run_evaluation_suite(evaluation_data: List[Dict]) -> Dict:
     """
